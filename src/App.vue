@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 
+// App.vue: 顶层状态与组件绑定
+// - 管理全局的输入/输出转速、级数与传动模式
+// - 将状态通过 v-model 或 props 传递到各子组件，子组件可通过 defineModel 与父组件联动
 import InputPanel from './components/InputPanel.vue'
 import CalculationPanel from './components/CalculationPanel.vue'
 import OutputPanel from './components/OutputPanel.vue'

@@ -1,12 +1,15 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 
+// InputPanel 说明：
+// - 通过 `defineModel` 暴露与父组件双向绑定的参数：`inputSpeed`, `outputSpeed`, `outputSpeedMin`, `outputSpeedMax`, `gearStages`
+// - 提供基于上下限与级数的等差序列计算（用于向用户展示候选输出转速），并在输入超出序列范围时适当扩展序列
+// - 约束：所有输入值均强制非负
 const inputSpeed = defineModel<number>('inputSpeed', { default: 0 })
 const outputSpeed = defineModel<number>('outputSpeed', { default: 0 })
 const outputSpeedMin = defineModel<number>('outputSpeedMin', { default: 0 })
 const outputSpeedMax = defineModel<number>('outputSpeedMax', { default: 0 })
 const gearStages = defineModel<number>('gearStages', { default: 1 })
-// 可选：暴露选中的序列值给父组件（单个数值）
 
 // 输出转速等差数列，数量等于变速级数
 const outputSpeedSequence = computed(() => {

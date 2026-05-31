@@ -2,6 +2,14 @@
 import { computed, watch, ref, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import * as echarts from 'echarts'
 
+// CalculationPanel.vue 概要：
+// - 计算并展示基于“公比”的等比序列（用于齿轮级数设计可视化）
+// - 支持将理论公比（由上下限和级数计算）标准化为若干预定义值或可选的非标值
+// - 根据所选公比生成基础序列，并在输入超出范围时向左右延伸序列
+// - 使用 ECharts 自定义渲染（custom series）绘制“箱型”表示序列范围，垂直刻度表示每个节点，绿点表示原始输入/上下限
+// 注意：本文件内的计算和渲染顺序不可随意重排；改动前请确保不改变已有计算逻辑
+
+// 父组件传入的关键参数：级数、传动模式、输入与输出上下限
 const props = defineProps<{
   gearStages: number
   transmissionMode: 'speed-down' | 'speed-up'
@@ -21,6 +29,11 @@ const maxTransmissionRatioRaw = computed(() => {
   return inSpeed / minSpeed
 })
 
+// ------- 公比计算部分 -------
+// theoreticalRatioRaw: 根据输出上下限与级数计算得到的“原始公比”（数值）
+// originalRatio / nonStandardRatio: 用于界面展示的格式化字符串
+// selectedStandardRatio / selectedRatioMode: 管理用户在标准/非标公比之间的选择
+// selectedActualRatio: 最终用于序列生成的数值（优先使用用户选择）
 // 原始公比（原始数值与展示字符串）
 const theoreticalRatioRaw = computed<number | null>(() => {
   const minSpeed = Math.min(props.outputSpeedMin || 0, props.outputSpeedMax || 0)
@@ -105,7 +118,9 @@ function selectRatioOption(value: number, isNonStandard = false) {
   selectedStandardRatio.value = value
 }
 
-// 生成基础等比数列：根据“标准化之后的公比”与原始公比大小，选择从下限或上限开始
+// ------- 等比序列生成 -------
+// geometricSequence: 根据所选公比和级数生成基础等比数列。
+// 规则：如果选定公比小于等于原始公比，则从输出下限开始向上乘；否则从输出上限开始向下除
 const geometricSequence = computed(() => {
   const stages = props.gearStages
   const ratio = selectedActualRatio.value ?? theoreticalRatioRaw.value
@@ -128,6 +143,7 @@ const geometricSequence = computed(() => {
 
 const sortedBaseSequence = computed(() => [...geometricSequence.value].sort((a, b) => a - b))
 
+// 生成延伸序列（当原始输入在基础序列之外时使用，以保持可视化的连续性）
 function buildLeftExtensionSequence(minValue: number, ratio: number, steps: number) {
   return Array.from({ length: steps }, (_, index) => minValue / Math.pow(ratio, steps - index))
 }
@@ -261,6 +277,13 @@ watch(() => minTransmissionPairs.value.rounded, (newVal) => {
   minPairs.value = newVal
 }, { immediate: true })
 
+// ------- ECharts 渲染与生命周期管理 -------
+// 使用 ECharts 的 custom series 在同一图层内精确绘制箱体、刻度、延伸线与标记。
+// 注意：自定义渲染中使用的 z2 值控制图形叠放顺序，绿点应比箱体更上层以保证可见性。
+// initChart / disposeChart / updateChart: 分别负责初始化、清理以及根据模型刷新图表
+// resizeHandler: 在窗口大小变化时触发图表重绘
+// renderItem 内部的 addTick / addRawMarker 用于分别绘制蓝色刻度与绿色原始值标记
+// 注意不要随意修改 renderItem 中的坐标转换 api.coord 的调用顺序
 // ECharts 绑定
 const chartRef = ref<HTMLElement | null>(null)
 let chartInstance: echarts.ECharts | null = null
