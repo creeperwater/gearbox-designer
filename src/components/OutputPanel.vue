@@ -5,6 +5,7 @@ import * as echarts from 'echarts'
 const props = defineProps<{
   schema: number[] | null
   gearStages: number
+  minPairs: number
 }>()
 
 const chartRef = ref<HTMLElement | null>(null)
@@ -31,16 +32,22 @@ const updateChart = () => {
 
   // 没有选中时，清空数据呈现空白网格
   if (!schema || schema.length === 0) {
+    // 即使没选中方案，也按照算出/默认的最小传动副数量留好轴线架子
+    const defaultShafts = (props.minPairs || 0) + 1
+    for (let i = 1; i <= defaultShafts; i++) {
+      xData.push(getRoman(i))
+    }
     chartInstance.setOption({
-      xAxis: { data: ['Ⅰ'] },
+      xAxis: { data: xData },
       yAxis: { data: yData },
       series: [{ data: [] }, { data: [] }]
     }, { replaceMerge: ['xAxis', 'yAxis', 'series'] })
     return
   }
 
-  // X轴竖线数量：几组传动就有多少+1个轴
-  const shafts = schema.length + 1
+  // X轴竖线数量：几组传动就有多少+1个轴（结合 minPairs 保底）
+  const targetPairs = Math.max(props.minPairs || 0, schema.length)
+  const shafts = targetPairs + 1
   for (let i = 1; i <= shafts; i++) {
     xData.push(getRoman(i))
   }
@@ -155,7 +162,7 @@ onUnmounted(() => {
 })
 
 // 监听外界数据变化动态更新图表
-watch(() => [props.schema, props.gearStages], () => {
+watch(() => [props.schema, props.gearStages, props.minPairs], () => {
   updateChart()
 }, { deep: true })
 

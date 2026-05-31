@@ -1,16 +1,38 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 import InputPanel from './components/InputPanel.vue'
 import CalculationPanel from './components/CalculationPanel.vue'
 import OutputPanel from './components/OutputPanel.vue'
 
-const inputSpeed = ref<number | null>(null)
-const outputSpeedMin = ref<number | null>(null)
-const outputSpeedMax = ref<number | null>(null)
-const gearStages = ref<number>(1) // 默认为 1 级
+const inputSpeed = ref<number>(1500)
+const outputSpeed = ref<number>(0)
+const outputSpeedMin = ref<number>(1000)
+const outputSpeedMax = ref<number>(2000)
+const gearStages = ref<number>(5) // 默认为 5 级，方便调试序列图
 const transmissionMode = ref<'speed-down' | 'speed-up'>('speed-down') // 升降速传动选择
 const selectedSchema = ref<number[] | null>(null) // 选中的参考方案
+const minPairs = ref<number>(0) // 最小传动副数量
+
+watch(
+  [gearStages, outputSpeed],
+  ([stages, speed]) => {
+    if (stages === 1) {
+      outputSpeedMin.value = speed
+      outputSpeedMax.value = speed
+    }
+  },
+  { immediate: true }
+)
+
+watch(gearStages, (stages) => {
+  if (stages === 1) {
+    const syncedValue = outputSpeedMin.value || outputSpeedMax.value || outputSpeed.value
+    outputSpeed.value = syncedValue
+    outputSpeedMin.value = syncedValue
+    outputSpeedMax.value = syncedValue
+  }
+})
 </script>
 
 <template>
@@ -20,10 +42,10 @@ const selectedSchema = ref<number[] | null>(null) // 选中的参考方案
         
         <InputPanel 
           v-model:inputSpeed="inputSpeed"
+          v-model:outputSpeed="outputSpeed"
           v-model:outputSpeedMin="outputSpeedMin"
           v-model:outputSpeedMax="outputSpeedMax"
           v-model:gearStages="gearStages"
-          v-model:transmissionMode="transmissionMode"
         />
 
         <CalculationPanel 
@@ -33,11 +55,13 @@ const selectedSchema = ref<number[] | null>(null) // 选中的参考方案
           :outputSpeedMin="outputSpeedMin"
           :outputSpeedMax="outputSpeedMax"
           v-model:selectedSchema="selectedSchema"
+          v-model:minPairs="minPairs"
         />
 
         <OutputPanel 
           :gearStages="gearStages"
           :schema="selectedSchema"
+          :minPairs="minPairs"
         />
 
       </v-container>
