@@ -32,18 +32,18 @@ const outputSpeedSequence = computed(() => {
   }
 
   const sequence = Array.from({ length: stages }, (_, index) => low + step * index)
-  const sequenceMin = sequence[0]
-  const sequenceMax = sequence[sequence.length - 1]
+  const sequenceMin = sequence[0]!
+  const sequenceMax = sequence[sequence.length - 1]!
 
   if (input < sequenceMin) {
     const extraCount = Math.ceil((sequenceMin - input) / step)
     for (let index = 0; index < extraCount; index++) {
-      sequence.unshift(sequence[0] - step)
+      sequence.unshift((sequence[0] ?? 0) - step)
     }
   } else if (input > sequenceMax) {
     const extraCount = Math.ceil((input - sequenceMax) / step)
     for (let index = 0; index < extraCount; index++) {
-      sequence.push(sequence[sequence.length - 1] + step)
+      sequence.push((sequence[sequence.length - 1] ?? 0) + step)
     }
   }
 
@@ -64,9 +64,9 @@ const recommendedIndex = computed(() => {
   const seq = filteredSequenceNumbers.value
   if (!seq || seq.length === 0) return -1
   let best = 0
-  let bestDiff = Math.abs(seq[0] - inputSpeed.value)
+  let bestDiff = Math.abs(seq[0]! - inputSpeed.value)
   for (let i = 1; i < seq.length; i++) {
-    const d = Math.abs(seq[i] - inputSpeed.value)
+    const d = Math.abs(seq[i]! - inputSpeed.value)
     if (d < bestDiff) {
       best = i
       bestDiff = d

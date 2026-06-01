@@ -1,11 +1,19 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { ref, onMounted, onUnmounted, watch, computed, nextTick } from 'vue'
 import * as echarts from 'echarts'
+
+type ReferenceSpeedAxisModel = {
+  values: number[]
+  baseCount: number
+  leftExtensionCount: number
+  rightExtensionCount: number
+}
 
 const props = defineProps<{
   schema: number[] | null
   gearStages: number
   minPairs: number
+  referenceSpeedAxis: ReferenceSpeedAxisModel | null
 }>()
 
 const chartRef = ref<HTMLElement | null>(null)
@@ -16,19 +24,48 @@ const getRoman = (num: number) => {
   return romans[num - 1] || String(num)
 }
 
-const updateChart = () => {
+const formatSpeed = (value: number, index: number = 0) => String(Math.round(value)) + "\u200B".repeat(index)
+
+const getYAxisData = () => {
+  const axis = props.referenceSpeedAxis
+  if (axis && axis.values.length > 0) {
+    return axis.values.map((v, i) => formatSpeed(v, i))
+  }
+
+  const stages = props.gearStages || 1
+  return Array.from({ length: stages }, (_, index) => `n${index + 1}`)
+}
+
+const getYAxisLabel = (level: number) => {
+  const axis = props.referenceSpeedAxis
+  if (!axis || axis.values.length === 0) {
+    return `n${level}`
+  }
+
+  const position = axis.leftExtensionCount + level - 1
+  const value = axis.values[position]
+  return value == null ? null : formatSpeed(value, position)
+}
+
+const dynamicHeight = ref('350px')
+
+const updateChart = async () => {
   if (!chartInstance) return
+
+  const yData = getYAxisData()
+  
+  // 动态计算高度，每级约 40px，加上上下留白
+  const calculatedHeight = Math.max(350, yData.length * 40 + 60)
+  dynamicHeight.value = `${calculatedHeight}px`
+  
+  // 等待DOM更新后再调整组件大小
+  await nextTick()
+  chartInstance.resize()
 
   const stages = props.gearStages || 1
   const schema = props.schema
 
   const xData: string[] = []
-  const yData: string[] = []
-
-  // Y轴有变速级数那么多个坐标
-  for (let i = 1; i <= stages; i++) {
-    yData.push(`n${i}`)
-  }
 
   // 没有选中时，清空数据呈现空白网格
   if (!schema || schema.length === 0) {
@@ -40,7 +77,7 @@ const updateChart = () => {
     chartInstance.setOption({
       xAxis: { data: xData },
       yAxis: { data: yData },
-      series: [{ data: [] }, { data: [] }]
+      series: []
     }, { replaceMerge: ['xAxis', 'yAxis', 'series'] })
     return
   }
@@ -66,7 +103,10 @@ const updateChart = () => {
 
   // 从第一根轴的最高转速（1轴上 n_stages 的点）开始画结构网
   let currentLayer = [stages] 
-  points.add(`0-${stages}`)
+  const initialLabel = getYAxisLabel(stages)
+  if (initialLabel != null) {
+    points.add(`0-${initialLabel}`)
+  }
 
   for (let i = 0; i < schema.length; i++) {
     const nextLayer: number[] = []
@@ -82,11 +122,13 @@ const updateChart = () => {
           
           const startAxis = getRoman(i + 1)
           const endAxis = getRoman(i + 2)
-          const startY = `n${u}`
-          const endY = `n${v}`
-          
-          lines.push({ coords: [[startAxis, startY], [endAxis, endY]] })
-          points.add(`${i+1}-${v}`)
+          const startY = getYAxisLabel(u)
+          const endY = getYAxisLabel(v)
+
+          if (startY != null && endY != null) {
+            lines.push({ coords: [[startAxis, startY], [endAxis, endY]] })
+            points.add(`${i + 1}-${endY}`)
+          }
         }
       }
     }
@@ -97,7 +139,7 @@ const updateChart = () => {
   // 整理散点数据
   const scatterData = Array.from(points).map(pt => {
     const [axisIdx, yVal] = pt.split('-')
-    return [getRoman(Number(axisIdx) + 1), `n${yVal}`]
+    return [getRoman(Number(axisIdx) + 1), yVal]
   })
 
   // 使用 replaceMerge 更新使得即使列数变化依然顺滑过渡
@@ -120,12 +162,7 @@ const updateChart = () => {
       boundaryGap: false, position: 'right', // 转速级数
       axisLine: { show: false }, axisTick: { show: false },
       splitLine: { show: true, lineStyle: { color: '#000' } },
-      axisLabel: {
-        // n1 -> n, 1设为sub下标
-        formatter: (value: string) => value.replace('n', 'n{sub|') + '}',
-        rich: { sub: { verticalAlign: 'bottom', fontSize: 10 } },
-        fontSize: 14, fontWeight: 'bold', color: '#000', margin: 10
-      }
+      axisLabel: { interval: 0, fontSize: 14, fontWeight: 'bold', color: '#000', margin: 10 }
     },
     series: [
       {
@@ -166,6 +203,10 @@ watch(() => [props.schema, props.gearStages, props.minPairs], () => {
   updateChart()
 }, { deep: true })
 
+watch(() => props.referenceSpeedAxis, () => {
+  updateChart()
+}, { deep: true })
+
 const handleResize = () => {
   chartInstance?.resize()
 }
@@ -177,7 +218,7 @@ const handleResize = () => {
     <v-card-text>
       <div class="py-4">
         <!-- 这里插入 ECharts 容器，直接映射原图样式 -->
-        <div ref="chartRef" style="width: 100%; max-width: 600px; height: 350px; margin: 0 auto;"></div>
+        <div ref="chartRef" :style="{ width: '100%', maxWidth: '600px', height: dynamicHeight, margin: '0 auto' }"></div>
       </div>
     </v-card-text>
   </v-card>

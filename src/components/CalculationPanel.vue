@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, watch, ref, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import recommendedIcon from '../assets/recommended.svg'
 import * as echarts from 'echarts'
 
 // CalculationPanel.vue 概要：
@@ -20,6 +21,12 @@ const props = defineProps<{
 
 const selectedSchema = defineModel<number[] | null>('selectedSchema')
 const minPairs = defineModel<number>('minPairs', { default: 0 })
+const referenceSpeedAxis = defineModel<{
+  values: number[]
+  baseCount: number
+  leftExtensionCount: number
+  rightExtensionCount: number
+} | null>('referenceSpeedAxis')
 
 // 计算输入转速与输出边界的传动比，用于最小传动副数量
 const maxTransmissionRatioRaw = computed(() => {
@@ -82,6 +89,23 @@ const ratioOptions = computed(() => {
       isNonStandard: true
     }
   ]
+})
+
+// 推荐的标准公比（7个标准值里距离理论公比最近的一个）
+const recommendedStandardRatio = computed<number | null>(() => {
+  const r = theoreticalRatioRaw.value
+  if (r == null) return null
+  const firstStandard = standardRatios[0] ?? 1
+  let best: number = firstStandard
+  let bestDiff = Math.abs(best - r)
+  for (const s of standardRatios) {
+    const d = Math.abs(s - r)
+    if (d < bestDiff) {
+      best = s
+      bestDiff = d
+    }
+  }
+  return best
 })
 
 // 当理论公比变化时，默认选择最接近的标准值
@@ -202,6 +226,30 @@ function getStandardInputSpeed(rawInput: number | null, sequence: number[], rati
   return nearest
 }
 
+const referenceSpeedAxisValue = computed(() => {
+  const sequence = sortedBaseSequence.value
+  const inputSpeed = props.inputSpeed ?? null
+  const ratio = selectedActualRatio.value ?? theoreticalRatioRaw.value
+  if (sequence.length === 0) return null
+
+  const minValue = sequence[0]!
+  const maxValue = sequence[sequence.length - 1]!
+  const isBelow = inputSpeed != null && inputSpeed < minValue
+  const isAbove = inputSpeed != null && inputSpeed > maxValue
+
+  const leftExtensionSteps = isBelow && ratio ? getExtensionSteps(ratio, minValue, inputSpeed as number) : 0
+  const rightExtensionSteps = isAbove && ratio ? getExtensionSteps(ratio, maxValue, inputSpeed as number) : 0
+  const leftExtensionValues = leftExtensionSteps > 0 && ratio ? buildLeftExtensionSequence(minValue, ratio, leftExtensionSteps) : []
+  const rightExtensionValues = rightExtensionSteps > 0 && ratio ? buildRightExtensionSequence(maxValue, ratio, rightExtensionSteps) : []
+
+  return {
+    values: [...leftExtensionValues, ...sequence, ...rightExtensionValues],
+    baseCount: sequence.length,
+    leftExtensionCount: leftExtensionValues.length,
+    rightExtensionCount: rightExtensionValues.length
+  }
+})
+
 const boxChartModel = computed(() => {
   const sequence = sortedBaseSequence.value
   const inputSpeed = props.inputSpeed ?? null
@@ -275,6 +323,10 @@ const minTransmissionPairs = computed(() => {
 // 把最小传动副数量暴露给父组件联动给图表
 watch(() => minTransmissionPairs.value.rounded, (newVal) => {
   minPairs.value = newVal
+}, { immediate: true })
+
+watch(referenceSpeedAxisValue, (value) => {
+  referenceSpeedAxis.value = value
 }, { immediate: true })
 
 // ------- ECharts 渲染与生命周期管理 -------
@@ -378,7 +430,7 @@ function updateChart() {
           })
         }
 
-        const addRawMarker = (value: number | null, label: string) => {
+        const addRawMarker = (value: number | null, label: string, color = '#2f9e44') => {
           if (value == null || !Number.isFinite(value)) return
           const x = api.coord([value, 0])[0]
           children.push({
@@ -390,7 +442,7 @@ function updateChart() {
               r: 4.5
             },
             style: {
-              fill: '#2f9e44',
+              fill: color,
               stroke: '#ffffff',
               lineWidth: 1.5
             }
@@ -402,7 +454,7 @@ function updateChart() {
               text: label,
               x,
               y: coordY + halfHeight + 14,
-              fill: '#2f9e44',
+              fill: color,
               fontSize: 11,
               fontWeight: 600,
               textAlign: 'center',
@@ -413,7 +465,8 @@ function updateChart() {
 
         addRawMarker(view.rawMinSpeed, `${Math.round(view.rawMinSpeed ?? 0)}`)
         addRawMarker(view.rawMaxSpeed, `${Math.round(view.rawMaxSpeed ?? 0)}`)
-        addRawMarker(view.inputSpeed, `${Math.round(view.inputSpeed ?? 0)}`)
+        // input speed should be highlighted in red
+        addRawMarker(view.inputSpeed, `${Math.round(view.inputSpeed ?? 0)}`, '#d73a2a')
 
         children.push({
           type: 'rect',
@@ -642,28 +695,29 @@ watch(
         </div>
 
         <!-- 标准公比选择（参考级数分解表格样式） -->
-        <div class="mb-3">
-          <div class="text-body-2 mb-2">公比标准化</div>
-          <div class="sequence-grid">
-            <div v-for="option in ratioOptions" :key="option.key" class="sequence-grid-item">
-              <v-card
-                variant="outlined"
-                :class="[
-                  option.isNonStandard
-                    ? (selectedRatioMode === 'non-standard' ? 'selected-card non-standard-card' : 'non-standard-card')
-                    : (selectedRatioMode === 'standard' && selectedStandardRatio === option.value ? 'selected-card' : 'normal-card')
-                ]"
-                style="cursor: pointer; transition: all 0.08s;"
-                @click="selectRatioOption(option.value, option.isNonStandard)"
-                density="compact"
-              >
-                <v-card-text class="px-2 py-1 compact-card-text">
-                  <div class="small-value text-center">{{ option.isNonStandard ? `非标公比 ${option.label}` : option.label }}</div>
-                </v-card-text>
-              </v-card>
-            </div>
-          </div>
-        </div>
+              <div class="mb-3">
+                <div class="text-body-2 mb-2">公比标准化</div>
+                <div class="sequence-grid">
+                  <div v-for="option in ratioOptions" :key="option.key" class="sequence-grid-item">
+                    <v-card
+                      variant="outlined"
+                      :class="[
+                        option.isNonStandard
+                          ? (selectedRatioMode === 'non-standard' ? 'selected-card non-standard-card' : 'non-standard-card')
+                          : (selectedRatioMode === 'standard' && selectedStandardRatio === option.value ? 'selected-card' : 'normal-card')
+                      ]"
+                      style="cursor: pointer; transition: all 0.08s;"
+                      @click="selectRatioOption(option.value, option.isNonStandard)"
+                      density="compact"
+                    >
+                      <img v-if="!option.isNonStandard && option.value === recommendedStandardRatio" :src="recommendedIcon" class="recommended-badge" alt="recommended" />
+                      <v-card-text class="px-2 py-1 compact-card-text">
+                        <div class="small-value text-center">{{ option.isNonStandard ? `非标公比 ${option.label}` : option.label }}</div>
+                      </v-card-text>
+                    </v-card>
+                  </div>
+                </div>
+              </div>
 
         <!-- 等比数列图表（基于输出转速下限与选择的标准公比或理论公比生成） -->
         <div class="mb-4">
@@ -691,7 +745,7 @@ watch(
             <v-card
               variant="outlined"
               :class="[
-                JSON.stringify(selectedSchema) === JSON.stringify(item.structure) ? 'selected-card' : (item.isRecommended ? 'recommended-card' : 'normal-card')
+                JSON.stringify(selectedSchema) === JSON.stringify(item.structure) ? 'selected-card' : 'normal-card'
               ]"
               style="cursor: pointer; transition: all 0.08s;"
               @click="selectedSchema = item.structure"
@@ -727,5 +781,8 @@ watch(
 .recommended-card { border: 1px solid rgba(59,130,246,0.9); background-color: rgba(219,234,254,0.35); border-radius: 2px; }
 .normal-card { border: 1px solid rgba(229,231,235,0.9); border-radius: 2px; }
 .non-standard-card { border: 1px solid rgba(220,38,38,0.95); background-color: rgba(254,226,226,0.95); border-radius: 2px; }
+/* recommended badge positioning */
+.sequence-grid-item .v-card { position: relative; }
+.recommended-badge { position: absolute; top: 0px; right: 2px; width: 22px; height: 22px; pointer-events: none; }
 @media (min-width: 1024px) { .sequence-grid { grid-template-columns: repeat(3, 1fr); } }
 </style>

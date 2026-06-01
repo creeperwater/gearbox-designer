@@ -8,6 +8,13 @@ import InputPanel from './components/InputPanel.vue'
 import CalculationPanel from './components/CalculationPanel.vue'
 import OutputPanel from './components/OutputPanel.vue'
 
+type ReferenceSpeedAxisModel = {
+  values: number[]
+  baseCount: number
+  leftExtensionCount: number
+  rightExtensionCount: number
+}
+
 const inputSpeed = ref<number>(1500)
 const outputSpeed = ref<number>(0)
 const outputSpeedMin = ref<number>(1000)
@@ -16,6 +23,7 @@ const gearStages = ref<number>(5) // 默认为 5 级，方便调试序列图
 const transmissionMode = ref<'speed-down' | 'speed-up'>('speed-down') // 升降速传动选择
 const selectedSchema = ref<number[] | null>(null) // 选中的参考方案
 const minPairs = ref<number>(0) // 最小传动副数量
+const referenceSpeedAxis = ref<ReferenceSpeedAxisModel | null>(null)
 
 watch(
   [gearStages, outputSpeed],
@@ -59,12 +67,14 @@ watch(gearStages, (stages) => {
           :outputSpeedMax="outputSpeedMax"
           v-model:selectedSchema="selectedSchema"
           v-model:minPairs="minPairs"
+          v-model:referenceSpeedAxis="referenceSpeedAxis"
         />
 
         <OutputPanel 
           :gearStages="gearStages"
           :schema="selectedSchema"
           :minPairs="minPairs"
+          :referenceSpeedAxis="referenceSpeedAxis"
         />
 
       </v-container>
