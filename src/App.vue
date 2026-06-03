@@ -15,17 +15,24 @@ type ReferenceSpeedAxisModel = {
   rightExtensionCount: number
 }
 
+type DiagramModel = {
+  shafts: string[]
+  yAxisLabels: string[]
+  lines: Array<{ coords: [[string, string], [string, string]] }>
+  scatterPoints: Array<[string, string]>
+}
+
 const inputSpeed = ref<number>(1500)
 const outputSpeed = ref<number>(0)
 const outputSpeedMin = ref<number>(1000)
 const outputSpeedMax = ref<number>(2000)
-const gearStages = ref<number>(5) // 默认为 5 级，方便调试序列图
-const transmissionMode = ref<'speed-down' | 'speed-up'>('speed-down') // 升降速传动选择
-const selectedSchema = ref<number[] | null>(null) // 选中的参考方案
-const minPairs = ref<number>(0) // 最小传动副数量
+const gearStages = ref<number>(5)
+const transmissionMode = ref<'speed-down' | 'speed-up'>('speed-down')
+const selectedSchema = ref<number[] | null>(null)
 const referenceSpeedAxis = ref<ReferenceSpeedAxisModel | null>(null)
-const selectedExpansionSteps = ref<number[] | null>(null) // 选中的扩大顺序步距方案
-const transmissionDirection = ref<'down' | 'up'>('down') // 传动方向（降速=down，升速=up）
+const selectedExpansionSteps = ref<number[] | null>(null)
+const transmissionDirection = ref<'down' | 'up'>('down')
+const diagramData = ref<DiagramModel | null>(null)
 
 watch(
   [gearStages, outputSpeed],
@@ -68,19 +75,14 @@ watch(gearStages, (stages) => {
           :outputSpeedMin="outputSpeedMin"
           :outputSpeedMax="outputSpeedMax"
           v-model:selectedSchema="selectedSchema"
-          v-model:minPairs="minPairs"
           v-model:referenceSpeedAxis="referenceSpeedAxis"
           v-model:selectedExpansionSteps="selectedExpansionSteps"
           v-model:transmissionDirection="transmissionDirection"
+          v-model:diagramData="diagramData"
         />
 
         <OutputPanel 
-          :gearStages="gearStages"
-          :schema="selectedSchema"
-          :referenceSpeedAxis="referenceSpeedAxis"
-          :inputSpeed="inputSpeed"
-          :expansionSteps="selectedExpansionSteps"
-          :expansionDirection="transmissionDirection"
+          :diagramData="diagramData"
         />
 
       </v-container>

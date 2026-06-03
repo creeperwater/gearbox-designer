@@ -20,7 +20,6 @@ const props = defineProps<{
 }>()
 
 const selectedSchema = defineModel<number[] | null>('selectedSchema')
-const minPairs = defineModel<number>('minPairs', { default: 0 })
 const referenceSpeedAxis = defineModel<{
   values: number[]
   baseCount: number
@@ -29,14 +28,6 @@ const referenceSpeedAxis = defineModel<{
 } | null>('referenceSpeedAxis')
 const selectedExpansionSteps = defineModel<number[] | null>('selectedExpansionSteps')
 const transmissionDirection = defineModel<'down' | 'up'>('transmissionDirection', { default: 'down' })
-
-// 计算输入转速与输出边界的传动比，用于最小传动副数量
-const maxTransmissionRatioRaw = computed(() => {
-  const inSpeed = props.inputSpeed || 0
-  const minSpeed = props.outputSpeedMin || 0
-  if (inSpeed <= 0 || minSpeed <= 0) return 0
-  return inSpeed / minSpeed
-})
 
 // ------- 公比计算部分 -------
 // theoreticalRatioRaw: 根据输出上下限与级数计算得到的“原始公比”（数值）
@@ -309,23 +300,6 @@ const boxChartModel = computed(() => {
     maxValue
   }
 })
-
-// 计算最小传动副数量 (以 4 为底的对数，然后向上取整)
-const minTransmissionPairs = computed(() => {
-  const r = maxTransmissionRatioRaw.value
-  // 如果没有合理的变速比(<=1)，传动副数记为0
-  if (r <= 1) return { raw: '0.00', rounded: 0 }
-  const rawVal = Math.log(r) / Math.log(4) // 换底公式：log4(r) = ln(r) / ln(4)
-  return {
-    raw: rawVal.toFixed(2),
-    rounded: Math.ceil(rawVal)
-  }
-})
-
-// 把最小传动副数量暴露给父组件联动给图表
-watch(() => minTransmissionPairs.value.rounded, (newVal) => {
-  minPairs.value = newVal
-}, { immediate: true })
 
 watch(referenceSpeedAxisValue, (value) => {
   referenceSpeedAxis.value = value
@@ -810,6 +784,138 @@ watch(
   },
   { immediate: true }
 )
+
+// ------- 参考方案图表数据 -------
+// 将所有计算结果打包为结构化的图表数据，供 OutputPanel 直接渲染
+
+type DiagramModel = {
+  shafts: string[]
+  yAxisLabels: string[]
+  lines: Array<{ coords: [[string, string], [string, string]] }>
+  scatterPoints: Array<[string, string]>
+}
+
+const getRoman = (num: number) => {
+  const romans = ['Ⅰ', 'Ⅱ', 'Ⅲ', 'Ⅳ', 'Ⅴ', 'Ⅵ', 'Ⅶ', 'Ⅷ', 'Ⅸ', 'Ⅹ', 'Ⅺ', 'Ⅻ']
+  return romans[num - 1] || String(num)
+}
+
+const formatSpeed = (value: number, index: number = 0) => String(Math.round(value)) + "\u200B".repeat(index)
+
+const getYAxisData = () => {
+  const axis = referenceSpeedAxisValue.value
+  if (axis && axis.values.length > 0) {
+    return axis.values.map((v, i) => formatSpeed(v, i))
+  }
+  const stages = props.gearStages || 1
+  return Array.from({ length: stages }, (_, index) => `n${index + 1}`)
+}
+
+const getYAxisLabel = (level: number) => {
+  const axis = referenceSpeedAxisValue.value
+  if (!axis || axis.values.length === 0) {
+    return `n${level}`
+  }
+  const position = axis.leftExtensionCount + level - 1
+  const value = axis.values[position]
+  return value == null ? null : formatSpeed(value, position)
+}
+
+const getClosestAxisValue = () => {
+  const axis = referenceSpeedAxisValue.value
+  const inputSpeed = props.inputSpeed
+  if (!axis || axis.values.length === 0 || inputSpeed == null) return null
+  let bestIndex = 0
+  let bestDiff = Infinity
+  for (let i = 0; i < axis.values.length; i++) {
+    const speed = axis.values[i]!
+    const diff = Math.abs(speed - inputSpeed)
+    if (diff < bestDiff) {
+      bestIndex = i
+      bestDiff = diff
+    }
+  }
+  return formatSpeed(axis.values[bestIndex]!, bestIndex)
+}
+
+const diagramDataValue = computed<DiagramModel | null>(() => {
+  const schema = selectedSchema.value
+  if (!schema || schema.length === 0) return null
+
+  const stages = props.gearStages || 1
+  const shafts = schema.length + 1
+  const shaftNames = Array.from({ length: shafts }, (_, i) => getRoman(i + 1))
+  const yAxisLabels = getYAxisData()
+
+  // 使用选中的扩大顺序步距（若无则回退标准顺序）
+  const steps = selectedExpansionSteps.value ?? (() => {
+    const defaultSteps = [1]
+    let current = 1
+    for (let i = 0; i < schema.length; i++) {
+      current *= schema[i]!
+      defaultSteps.push(current)
+    }
+    return defaultSteps.slice(0, schema.length)
+  })()
+
+  const lines: Array<{ coords: [[string, string], [string, string]] }> = []
+  const points = new Set<string>()
+
+  // 轴I上的输入转速点
+  const inputYLabel = getClosestAxisValue()
+  if (inputYLabel != null) {
+    points.add(`0-${inputYLabel}`)
+  }
+
+  // 根据传动方向逐级扩散
+  const isDown = transmissionDirection.value === 'down'
+  const anchorLevel = isDown ? stages : 1
+  let currentLayer = [anchorLevel]
+
+  for (let i = 0; i < schema.length; i++) {
+    const nextLayer: number[] = []
+    const p = schema[i]!
+    const xStep = steps[i]!
+
+    for (const u of currentLayer) {
+      for (let j = 0; j < p; j++) {
+        const v = isDown ? (u - j * xStep) : (u + j * xStep)
+        if (v >= 1 && v <= stages) {
+          nextLayer.push(v)
+          const startAxis = getRoman(i + 1)
+          const endAxis = getRoman(i + 2)
+          const startY = (i === 0) ? inputYLabel : getYAxisLabel(u)
+          const endY = getYAxisLabel(v)
+          if (startY != null && endY != null) {
+            lines.push({ coords: [[startAxis, startY], [endAxis, endY]] })
+          }
+        }
+      }
+    }
+    currentLayer = Array.from(new Set(nextLayer))
+
+    // 按轴层级添加散点：当前轴(i+1)上所有实际存在的转速级
+    for (const level of currentLayer) {
+      const yLabel = getYAxisLabel(level)
+      if (yLabel != null) {
+        points.add(`${i + 1}-${yLabel}`)
+      }
+    }
+  }
+
+  const scatterPoints: Array<[string, string]> = Array.from(points).map(pt => {
+    const parts = pt.split('-')
+    return [getRoman(Number(parts[0]!) + 1), parts[1]!] as [string, string]
+  })
+
+  return { shafts: shaftNames, yAxisLabels, lines, scatterPoints }
+})
+
+const diagramData = defineModel<DiagramModel | null>('diagramData')
+
+watch(diagramDataValue, (value) => {
+  diagramData.value = value
+}, { immediate: true })
 
 </script>
 
