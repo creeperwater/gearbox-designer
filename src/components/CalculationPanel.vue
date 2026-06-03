@@ -27,6 +27,8 @@ const referenceSpeedAxis = defineModel<{
   leftExtensionCount: number
   rightExtensionCount: number
 } | null>('referenceSpeedAxis')
+const selectedExpansionSteps = defineModel<number[] | null>('selectedExpansionSteps')
+const transmissionDirection = defineModel<'down' | 'up'>('transmissionDirection', { default: 'down' })
 
 // 计算输入转速与输出边界的传动比，用于最小传动副数量
 const maxTransmissionRatioRaw = computed(() => {
@@ -642,7 +644,42 @@ function getUniquePermutations(elements: number[]): number[][] {
   return result
 }
 
-// 计算当前级数的全部分解结果，并根据传动模式排序
+// ------- 传动类型判定 -------
+// 根据输入转速与输出转速上下限的几何平均数比较，判定是升速还是降速传动
+const transmissionType = computed(() => {
+  const inputSpeed = props.inputSpeed
+  const outputMin = props.outputSpeedMin
+  const outputMax = props.outputSpeedMax
+
+  if (inputSpeed == null || outputMin == null || outputMax == null) {
+    return null
+  }
+
+  if (outputMin <= 0 || outputMax <= 0) {
+    return null
+  }
+
+  // 计算几何平均数：sqrt(outputMin * outputMax)
+  const geometricMean = Math.sqrt(outputMin * outputMax)
+
+  if (inputSpeed < geometricMean) {
+    return {
+      type: 'speed-up',
+      label: '升速传动',
+      geometricMean: geometricMean.toFixed(2),
+      description: `输入转速 (${inputSpeed} rpm) < 几何平均数 (${geometricMean.toFixed(2)} rpm)`
+    }
+  } else {
+    return {
+      type: 'speed-down',
+      label: '降速传动',
+      geometricMean: geometricMean.toFixed(2),
+      description: `输入转速 (${inputSpeed} rpm) ≥ 几何平均数 (${geometricMean.toFixed(2)} rpm)`
+    }
+  }
+})
+
+// 计算当前级数的全部分解结果，并根据传动类型排序
 const processedPermutations = computed(() => {
   const n = props.gearStages
   if (!n || n < 1) return []
@@ -651,15 +688,17 @@ const processedPermutations = computed(() => {
   const factors = getPrimeFactors(n)
   const perms = getUniquePermutations(factors)
 
+  // 根据传动类型判定推荐方案
+  const type = transmissionType.value?.type ?? props.transmissionMode
+
   return perms.map(p => {
-    // 检查是否完美符合升/降序要求
     let isRecommended = false
-    if (props.transmissionMode === 'speed-down') {
-      // 降速传动：前大后小更为平稳（升序）
-      isRecommended = p.every((val, i, arr) => !i || (val >= (arr[i - 1] as number)))
-    } else {
-      // 升速传动：降序置顶
+    if (type === 'speed-down') {
+      // 降速传动：推荐质因数逐渐减小的方案（前大后小）
       isRecommended = p.every((val, i, arr) => !i || (val <= (arr[i - 1] as number)))
+    } else {
+      // 升速传动：推荐质因数逐渐增加的方案（前小后大）
+      isRecommended = p.every((val, i, arr) => !i || (val >= (arr[i - 1] as number)))
     }
 
     return {
@@ -670,15 +709,104 @@ const processedPermutations = computed(() => {
   }).sort((a, b) => Number(b.isRecommended) - Number(a.isRecommended))
 })
 
-// 当全部分解结果更新时，默认选中第一项（即最推荐的方案）
+// 当全部分解结果更新时，默认选中推荐的方案
 watch(
   () => processedPermutations.value,
   (newPerms) => {
-    if (newPerms && newPerms.length > 0 && newPerms[0]) {
-      selectedSchema.value = newPerms[0].structure
+    if (newPerms && newPerms.length > 0) {
+      const recommended = newPerms.find(p => p.isRecommended)
+      selectedSchema.value = recommended ? recommended.structure : (newPerms[0]?.structure ?? null)
     } else {
       selectedSchema.value = null
     }
+  },
+  { immediate: true }
+)
+
+// ------- 扩大顺序方案 -------
+// 对于选定的传动方案 schema = [p1, p2, ..., pn]，扩大顺序决定每组的步距
+// 扩大级0（基本组）步距=1，扩大级1步距=p_基本组，扩大级2步距=p_基本组×p_第一扩大组...
+// 对n个组分配不同的扩大级，产生n!种步距方案
+// 标准顺序（基本组在前）为推荐方案
+
+// 获取全排列（用于扩大级分配，n个组对应n个扩大级0~n-1）
+function getAllLevelPermutations(n: number): number[][] {
+  if (n === 0) return [[]]
+  if (n === 1) return [[0]]
+  const result: number[][] = []
+  for (let i = 0; i < n; i++) {
+    const subPerms = getAllLevelPermutations(n - 1)
+    for (const sub of subPerms) {
+      // 把子排列中的值重新映射：小于i的保持不变，大于等于i的加1
+      // 这样子排列 [0,1,...,n-2] 映射回 [0..n-1] 中去掉i的序列
+      const mapped = sub.map(v => v < i ? v : v + 1)
+      result.push([i, ...mapped])
+    }
+  }
+  return result
+}
+
+// 根据扩大级分配计算每组步距
+function computeStepsFromLevels(schema: number[], expansionLevels: number[]): number[] {
+  return schema.map((_, i) => {
+    const level = expansionLevels[i]!
+    let step = 1
+    for (let j = 0; j < schema.length; j++) {
+      if (expansionLevels[j]! < level) {
+        step *= schema[j]!
+      }
+    }
+    return step
+  })
+}
+
+// 生成所有扩大顺序方案
+const expansionSchemes = computed(() => {
+  const schema = selectedSchema.value
+  if (!schema || schema.length === 0) return []
+  if (schema.length === 1) return [{ key: '1', steps: [1], expansionLevels: [0], label: '步距: 1', isRecommended: true }]
+
+  const n = schema.length
+  const allLevelPerms = getAllLevelPermutations(n)
+  const seen = new Set<string>()
+
+  const schemes = allLevelPerms.map(expansionLevels => {
+    const steps = computeStepsFromLevels(schema, expansionLevels)
+    const key = steps.join('-')
+    if (seen.has(key)) return null
+    seen.add(key)
+
+    // 标准顺序：扩大级 [0,1,2,...] 即基本组在前
+    const isStandard = expansionLevels.every((level, i) => level === i)
+
+    return {
+      key,
+      steps,
+      expansionLevels,
+      label: `步距: ${steps.join(' × ')}`,  
+      isRecommended: isStandard
+    }
+  }).filter((s): s is NonNullable<typeof s> => s != null)
+
+  // 推荐方案排在最前
+  return schemes.sort((a, b) => Number(b.isRecommended) - Number(a.isRecommended))
+})
+
+// 当方案或扩大顺序选项更新时，默认选中推荐的步距方案
+watch(
+  [() => selectedSchema.value, () => expansionSchemes.value],
+  () => {
+    const recommended = expansionSchemes.value.find(s => s.isRecommended)
+    selectedExpansionSteps.value = recommended ? recommended.steps : (expansionSchemes.value[0]?.steps ?? null)
+  },
+  { immediate: true }
+)
+
+// 当传动类型变化时，更新传动方向
+watch(
+  () => transmissionType.value,
+  (t) => {
+    transmissionDirection.value = (t?.type === 'speed-up') ? 'up' : 'down'
   },
   { immediate: true }
 )
@@ -730,6 +858,22 @@ watch(
           <div v-else class="text-grey mt-2">无法生成等比序列（请检查输出转速上下限和级数）</div>
         </div>
 
+        <!-- 传动类型判定 -->
+        <div v-if="transmissionType" class="mb-4 p-3" :style="{ backgroundColor: transmissionType.type === 'speed-down' ? '#e8f5e9' : '#fff3e0', borderRadius: '4px', borderLeft: '4px solid ' + (transmissionType.type === 'speed-down' ? '#4caf50' : '#ff9800') }">
+          <div class="text-h6 mb-2" :style="{ color: transmissionType.type === 'speed-down' ? '#2e7d32' : '#ef6c00' }">
+            {{ transmissionType.label }}
+          </div>
+          <div class="text-body-2 text-grey-darken-1">
+            {{ transmissionType.description }}
+          </div>
+          <div class="text-caption text-grey mt-1">
+            判定依据：输出转速下限 ({{ outputSpeedMin }} rpm) 与上限 ({{ outputSpeedMax }} rpm) 的几何平均数为 {{ transmissionType.geometricMean }} rpm
+          </div>
+        </div>
+        <div v-else class="mb-4 p-3" style="backgroundColor: #fafafa; borderRadius: 4px; borderLeft: 4px solid #bdbdbd;">
+          <div class="text-body-2 text-grey">请输入完整的转速参数以判定传动类型</div>
+        </div>
+
         <div class="text-h6 mb-2">第一步：级数分解（传动方案）</div>
         <div class="text-body-2 mb-3 text-grey-darken-1">
           将变速级数 <strong>{{ gearStages }}</strong> 分解为质因数，并列出所有可能的传动组排列方案：
@@ -745,12 +889,13 @@ watch(
             <v-card
               variant="outlined"
               :class="[
-                JSON.stringify(selectedSchema) === JSON.stringify(item.structure) ? 'selected-card' : 'normal-card'
+                JSON.stringify(selectedSchema) === JSON.stringify(item.structure) ? 'selected-card' : (item.isRecommended ? 'recommended-card' : 'normal-card')
               ]"
               style="cursor: pointer; transition: all 0.08s;"
               @click="selectedSchema = item.structure"
               density="compact"
             >
+              <img v-if="item.isRecommended" :src="recommendedIcon" class="recommended-badge" alt="recommended" />
               <v-card-text class="px-2 py-1 compact-card-text">
                 <div class="small-value text-center">{{ item.text }}</div>
               </v-card-text>
@@ -758,9 +903,41 @@ watch(
           </div>
         </div>
 
+        <!-- 第二步：扩大顺序选择 -->
+        <div v-if="expansionSchemes.length > 0" class="mt-6">
+          <div class="text-h6 mb-2">第二步：扩大顺序（步距方案）</div>
+          <div class="text-body-2 mb-3 text-grey-darken-1">
+            为传动方案 <strong>{{ selectedSchema ? selectedSchema.join(' × ') : '--' }} = {{ gearStages }}</strong> 的每组传动分配扩大级，决定每组的步距（连线间距）：<br/>
+            基本组步距=1，第一扩大组步距=基本组级数，第二扩大组步距=基本组级数×第一扩大组级数...
+          </div>
+          <div class="sequence-grid">
+            <div
+              v-for="(scheme, index) in expansionSchemes"
+              :key="scheme.key"
+              class="sequence-grid-item"
+            >
+              <v-card
+                variant="outlined"
+                :class="[
+                  JSON.stringify(selectedExpansionSteps) === JSON.stringify(scheme.steps) ? 'selected-card' : (scheme.isRecommended ? 'recommended-card' : 'normal-card')
+                ]"
+                style="cursor: pointer; transition: all 0.08s;"
+                @click="selectedExpansionSteps = scheme.steps"
+                density="compact"
+              >
+                <img v-if="scheme.isRecommended" :src="recommendedIcon" class="recommended-badge" alt="recommended" />
+                <v-card-text class="px-2 py-1 compact-card-text">
+                  <div class="small-value text-center">{{ scheme.label }}</div>
+                </v-card-text>
+              </v-card>
+            </div>
+          </div>
+        </div>
+        <div v-else-if="selectedSchema" class="mt-6 text-grey">暂无扩大顺序选项</div>
+
         <v-divider class="my-6"></v-divider>
         <div class="text-body-1 text-grey-darken-1">
-          第一步已完成。后续将等待完善其他设计驱动参数，从而进一步展开转速图的计算和齿轮齿数的分配...
+          第二步已完成。后续将等待完善其他设计驱动参数，从而进一步展开转速图的计算和齿轮齿数的分配...
         </div>
       </div>
     </v-card-text>

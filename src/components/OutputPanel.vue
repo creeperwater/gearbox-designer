@@ -12,8 +12,10 @@ type ReferenceSpeedAxisModel = {
 const props = defineProps<{
   schema: number[] | null
   gearStages: number
-  minPairs: number
   referenceSpeedAxis: ReferenceSpeedAxisModel | null
+  inputSpeed: number | null
+  expansionSteps: number[] | null
+  expansionDirection: 'down' | 'up'
 }>()
 
 const chartRef = ref<HTMLElement | null>(null)
@@ -47,6 +49,56 @@ const getYAxisLabel = (level: number) => {
   return value == null ? null : formatSpeed(value, position)
 }
 
+// 计算离输入转速最近的转速级（在基础序列范围内查找，用于分支算法起始级）
+const getInputSpeedLevel = () => {
+  const axis = props.referenceSpeedAxis
+  const inputSpeed = props.inputSpeed
+  const stages = props.gearStages || 1
+
+  if (!axis || axis.values.length === 0 || inputSpeed == null) {
+    return stages // 无数据时默认取最高级
+  }
+
+  let bestLevel = stages
+  let bestDiff = Infinity
+
+  for (let level = 1; level <= stages; level++) {
+    const position = axis.leftExtensionCount + level - 1
+    const speed = axis.values[position]
+    if (speed == null) continue
+    const diff = Math.abs(speed - inputSpeed)
+    if (diff < bestDiff) {
+      bestLevel = level
+      bestDiff = diff
+    }
+  }
+
+  return bestLevel
+}
+
+// 在整个转速轴（含扩展序列）中查找离输入转速最近的Y轴标签
+// 用于轴I上输入转速点的精确定位
+const getClosestAxisValue = () => {
+  const axis = props.referenceSpeedAxis
+  const inputSpeed = props.inputSpeed
+
+  if (!axis || axis.values.length === 0 || inputSpeed == null) return null
+
+  let bestIndex = 0
+  let bestDiff = Infinity
+
+  for (let i = 0; i < axis.values.length; i++) {
+    const speed = axis.values[i]!
+    const diff = Math.abs(speed - inputSpeed)
+    if (diff < bestDiff) {
+      bestIndex = i
+      bestDiff = diff
+    }
+  }
+
+  return formatSpeed(axis.values[bestIndex]!, bestIndex)
+}
+
 const dynamicHeight = ref('350px')
 
 const updateChart = async () => {
@@ -69,8 +121,7 @@ const updateChart = async () => {
 
   // 没有选中时，清空数据呈现空白网格
   if (!schema || schema.length === 0) {
-    // 即使没选中方案，也按照算出/默认的最小传动副数量留好轴线架子
-    const defaultShafts = (props.minPairs || 0) + 1
+    const defaultShafts = schema ? schema.length + 1 : 2
     for (let i = 1; i <= defaultShafts; i++) {
       xData.push(getRoman(i))
     }
@@ -82,47 +133,56 @@ const updateChart = async () => {
     return
   }
 
-  // X轴竖线数量：几组传动就有多少+1个轴（结合 minPairs 保底）
-  const targetPairs = Math.max(props.minPairs || 0, schema.length)
-  const shafts = targetPairs + 1
+  // 竖轴数量 = 传动组数 + 1
+  const shafts = schema.length + 1
   for (let i = 1; i <= shafts; i++) {
     xData.push(getRoman(i))
   }
 
-  // 计算每一组传动的扩大步距 x 
-  // 第一扩大组 x[0] = 1, 第二扩大组 x[1] = p[0]*x[0] ...
-  const xMultipliers = [1]
-  let currentX = 1
-  for (let i = 0; i < schema.length; i++) {
-    currentX *= (schema[i] as number)
-    xMultipliers.push(currentX) 
-  }
+  // 使用用户选择的扩大顺序步距
+  const steps = props.expansionSteps ?? (() => {
+    // 默认步距：标准扩大顺序
+    const defaultSteps = [1]
+    let current = 1
+    for (let i = 0; i < schema.length; i++) {
+      current *= (schema[i] as number)
+      defaultSteps.push(current)
+    }
+    return defaultSteps.slice(0, schema.length)
+  })()
 
   const lines: any[] = []
   const points = new Set<string>() // 用 Set 避免重复节点，格式为 轴序号(0开始)-转速n
 
-  // 从第一根轴的最高转速（1轴上 n_stages 的点）开始画结构网
-  let currentLayer = [stages] 
-  const initialLabel = getYAxisLabel(stages)
-  if (initialLabel != null) {
-    points.add(`0-${initialLabel}`)
+  // 轴I上的输入转速点：在整个转速轴（含扩展）中找离输入转速最近的横轴位置
+  const inputYLabel = getClosestAxisValue()
+  if (inputYLabel != null) {
+    points.add(`0-${inputYLabel}`)
   }
+
+  // 根据传动方向确定锚点和扩展方向
+  // 降速传动：锚点在最高级（stages），向下扩展
+  // 升速传动：锚点在最低级（1），向上扩展
+  const isDown = props.expansionDirection === 'down'
+  const anchorLevel = isDown ? stages : 1
+  let currentLayer = [anchorLevel]
 
   for (let i = 0; i < schema.length; i++) {
     const nextLayer: number[] = []
     const p = schema[i] as number
-    const xStep = xMultipliers[i] as number
+    const xStep = steps[i] as number
 
     for (const u of currentLayer) {
       for (let j = 0; j < p; j++) {
-        // 向下一根轴按步距分散
-        const v = u - j * xStep 
+        // 根据传动方向决定扩展方向：降速向下，升速向上
+        const v = isDown ? (u - j * xStep) : (u + j * xStep)
         if (v >= 1 && v <= stages) {
           nextLayer.push(v)
           
           const startAxis = getRoman(i + 1)
           const endAxis = getRoman(i + 2)
-          const startY = getYAxisLabel(u)
+          // 轴I（第一组传动）的连线起点用输入转速的精确Y位置
+          const startY = (i === 0) ? inputYLabel : getYAxisLabel(u)
           const endY = getYAxisLabel(v)
 
           if (startY != null && endY != null) {
@@ -134,6 +194,14 @@ const updateChart = async () => {
     }
     // 过滤掉当前轴重复到达的点
     currentLayer = Array.from(new Set(nextLayer))
+  }
+
+  // 确保最后一个轴（输出轴）上的点对应输出转速等比数列（级1~stages，不含扩展序列）
+  for (let level = 1; level <= stages; level++) {
+    const yLabel = getYAxisLabel(level)
+    if (yLabel != null) {
+      points.add(`${schema.length}-${yLabel}`)
+    }
   }
 
   // 整理散点数据
@@ -199,7 +267,7 @@ onUnmounted(() => {
 })
 
 // 监听外界数据变化动态更新图表
-watch(() => [props.schema, props.gearStages, props.minPairs], () => {
+watch(() => [props.schema, props.gearStages, props.inputSpeed, props.expansionSteps, props.expansionDirection], () => {
   updateChart()
 }, { deep: true })
 
